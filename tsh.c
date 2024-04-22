@@ -168,14 +168,34 @@ void eval(char *cmdline) {
     char *argv = malloc(MAXARGS);
     int argc = parseline(cmdline, *argv);
 
+    //existing built-in commands
     char builtin_cmds[4][4] = {"quit", "jobs", "bg", "fg"};
+
+    // check the first argument for a built-in command
     for(int i=0; i<sizeof(builtin_cmds); i++) {
         if(strcmp(builtin_cmds[i], argv[0]) == 0) {
+            // ensure that the command was carried out
             if(builtin_cmd(argv) == 0) {
                 printf("Not a built-in command\n");
             }
-            break;    
+            return;    
         }
+    }
+
+    // assume the first argument is instead a pathname
+    char *path = (char *) argv[0];
+
+    // create mask to block signals so the parent has the chance
+    // to add the job to the job list (i.e. the child may terminate or be
+    // stopped before the parent could add it to the job list)
+    sigset_t mask, oldmask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTSTP);
+    sigaddset(&mask, SIGCHLD);
+    sigaddset(&mask, SIGUSR1);
+    if(sigprocmask(SIG_BLOCK, &mask, &oldmask) == -1) {
+        unix_error("sigprocmask");
     }
 
     pid_t childpid;
@@ -185,6 +205,42 @@ void eval(char *cmdline) {
 
         // child     
         case 0:
+            setpgid(0, 0);
+
+            struct sigaction act, oldsigint, oldsigtstp;
+            act.sa_flags = 0;
+            sigemptyset(&act.sa_mask);
+            act.sa_handler = SIG_IGN;
+
+            // ignore SIGINT and SIGTSTP signals after they
+            // are unblocked
+            if(sigaction(SIGINT, &act, &oldsigint) == -1) {
+                unix_error("sigaction");
+            }
+            if(sigaction(SIGTSTP, &act, &oldsigtstp) == -1) {
+                unix_error("sigaction");
+            }
+
+            if(kill(getppid(), SIGUSR1) == -1) {
+                unix_error("Failed to send SIGUSR1");
+            }
+
+            // unblock signals
+            if(sigprocmask(SIG_SETMASK, &oldmask, NULL) == -1) {
+                unix_error("sigprocmask");
+            }
+
+            // revert handlers for SIGINT and SIGTSTP
+            if(sigaction(SIGINT, &oldsigint, NULL) == -1) {
+                unix_error("sigaction");
+            }
+            if(sigaction(SIGTSTP, &oldsigtstp, NULL) == -1) {
+                unix_error("sigaction");
+            }
+
+            if(execve(path, argv, environ) == -1) {
+                unix_error("execve");
+            }
 
         // parent
         default:
