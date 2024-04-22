@@ -165,6 +165,31 @@ int main(int argc, char **argv) {
  * when we type ctrl-c (ctrl-z) at the keyboard.  
 */
 void eval(char *cmdline) {
+    char *argv = malloc(MAXARGS);
+    int argc = parseline(cmdline, *argv);
+
+    char builtin_cmds[4][4] = {"quit", "jobs", "bg", "fg"};
+    for(int i=0; i<sizeof(builtin_cmds); i++) {
+        if(strcmp(builtin_cmds[i], argv[0]) == 0) {
+            if(builtin_cmd(argv) == 0) {
+                printf("Not a built-in command\n");
+            }
+            break;    
+        }
+    }
+
+    pid_t childpid;
+    switch(childpid = fork()) {
+        case -1:
+            unix_error("fork");
+
+        // child     
+        case 0:
+
+        // parent
+        default:
+    }
+
     return;
 }
 
@@ -220,6 +245,17 @@ int parseline(const char *cmdline, char **argv) {
  *    it immediately.  
  */
 int builtin_cmd(char **argv) {
+    if(strcmp(argv[0], "quit") == 0) {
+        if(kill(-1, SIGQUIT) == -1) {
+            unix_error("failed to send SIGQUIT");
+        }
+    } else if(strcmp(argv[0], "jobs")) {
+        listjobs((struct job_t *) &jobs);
+        return 1;
+    } else if(strcmp(argv[0], "bg") == 0 && strcmp(argv[0], "fg") == 0) {
+        do_bgfg(argv);
+        return 1;
+    }
     return 0;     /* not a builtin command */
 }
 
@@ -227,6 +263,28 @@ int builtin_cmd(char **argv) {
  * do_bgfg - Execute the builtin bg and fg commands
  */
 void do_bgfg(char **argv) {
+    // first, obtain pid
+    
+    // assume pid was given as the second argument
+    struct job_t *job = getjobpid((struct job_t *) &jobs, (pid_t) strtol(argv[1], NULL, 10));
+    // if <job> is NULL, then the second argument was not a pid
+    if(job == NULL) {
+        job = getjobjid((struct job_t *) &jobs, (pid_t) strtol(argv[1], NULL, 10));
+        // if <job> is NULL once more, then the second argument 
+        // does not represent an existing job by pid nor jid
+        if (job == NULL) {
+            printf("Job (%s) does not exist\n", argv[1]);
+            return;
+        }
+    }
+
+    // next, check the command
+    if(strcmp(argv[0], "bg") == 0) {
+        job->state = BG;
+    } else {
+        job->state = FG;
+        waitfg(job->pid);
+    }
     return;
 }
 
@@ -234,6 +292,32 @@ void do_bgfg(char **argv) {
  * waitfg - Block until process pid is no longer the foreground process
  */
 void waitfg(pid_t pid) {
+    // obtain pid of foreground job
+    pid_t fg = fgpid((struct job_t *) &jobs);
+
+    // ensure that the given <pid> matches that of the 
+    // foreground job (i.e. <fg> != 0 or some other pid)
+
+    if(fg = pid) {
+        // create an empty mask
+        sigset_t mask;
+        sigemptyset(&mask);
+
+        while(1) {
+            // suspend execution until a signal arrives
+            sigsuspend(&mask);
+
+            // re-check the pid of the foreground job
+            pid_t fg = fgpid((struct job_t *) &jobs);
+            if(fg != pid) {
+                // unblock execution since <pid> is not longer
+                // the foreground process
+                break;
+            }
+            // continue blocking ...
+            continue;
+        }
+    }
     return;
 }
 
@@ -250,7 +334,19 @@ void waitfg(pid_t pid) {
  *     currently running children to terminate.  
  */
 void sigchld_handler(int sig) {
-    return;
+    pid_t childpid;
+    int status;
+
+    printf("handler: Caught SIGCHLD\n");
+
+    while((childpid = waitpid(-1, &status, WNOHANG)) > 0) {
+        printf("handler: Reaped child (%d)\n", childpid);
+        deletejob((struct job_t *) &jobs, childpid);
+    }
+
+    if(childpid == -1 && errno != ECHILD) {
+        unix_error("waitpid");
+    }
 }
 
 /* 
@@ -259,6 +355,20 @@ void sigchld_handler(int sig) {
  *    to the foreground job.  
  */
 void sigint_handler(int sig) {
+    // obtain the pid of foreground job
+    pid_t fg = fgpid((struct job_t *) &jobs);
+
+    // ensure <fg> is not 0; if <fg> does not equal to 0
+    // then a foreground job exists
+
+    // if <fg> is 0, then this handler will do nothing
+
+    if(fg != (pid_t) 0) {
+        // send a SIGINT signal to the foreground job
+        if(kill(fg, SIGINT) == -1) {
+            unix_error("failed to send SIGINT");
+        }
+    }
     return;
 }
 
@@ -268,6 +378,20 @@ void sigint_handler(int sig) {
  *     foreground job by sending it a SIGTSTP.  
  */
 void sigtstp_handler(int sig) {
+    // first, obtain pid of foreground job
+    pid_t fg = fgpid((struct job_t *) &jobs);
+
+    // ensure <fg> is not 0; if <fg> does not equal to 0
+    // then a foreground job exists
+
+    // if <fg> is 0, then this handler will do nothing
+
+    if(fg != (pid_t) 0) {
+        // send a SIGTSTP signal to the foreground job
+        if(kill(fg, SIGTSTP) == -1) {
+            unix_error("failed to send SIGTSTP");
+        }
+    }
     return;
 }
 
