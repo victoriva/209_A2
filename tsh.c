@@ -169,10 +169,10 @@ void eval(char *cmdline) {
     int argc = parseline(cmdline, argv);
 
     //existing built-in commands
-    char builtin_cmds[4][4] = {"quit", "jobs", "bg", "fg"};
+    char builtin_cmds[4][5] = {"quit", "jobs", "bg", "fg"};
 
     // check the first argument for a built-in command
-    for(int i=0; i<sizeof(builtin_cmds); i++) {
+    for(int i=0; i<4; i++) {
         if(strcmp(builtin_cmds[i], argv[0]) == 0) {
             // ensure that the command was carried out
             if(builtin_cmd(argv) == 0) {
@@ -183,7 +183,6 @@ void eval(char *cmdline) {
     }
 
     // assume the first argument is instead a pathname
-    char *path = (char *) argv[0];
     int state;
 
     // determine the state of the process (e.g. FG, BG)
@@ -196,11 +195,12 @@ void eval(char *cmdline) {
     // create mask to block signals so the parent has the chance
     // to add the job to the job list (i.e. the child may terminate or be
     // stopped before the parent could add it to the job list)
-    sigset_t mask, oldmask;
+    sigset_t mask, oldmask, emptymask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTSTP);
     sigaddset(&mask, SIGCHLD);
+    sigaddset(&mask, SIGUSR1);
     if(sigprocmask(SIG_BLOCK, &mask, &oldmask) == -1) {
         unix_error("sigprocmask");
     }
@@ -212,11 +212,9 @@ void eval(char *cmdline) {
 
         // child     
         case 0:
-            setpgid(0, 0);
-
             struct sigaction act, oldsigint, oldsigtstp;
-            act.sa_flags = 0;
             sigemptyset(&act.sa_mask);
+            act.sa_flags = SA_RESTART;
             act.sa_handler = SIG_IGN;
 
             // ignore SIGINT and SIGTSTP signals after they
@@ -228,6 +226,11 @@ void eval(char *cmdline) {
                 unix_error("sigaction");
             }
 
+            // set child's process group id 
+            setpgid(0, 0);
+
+            // notify the parent that the process group id has been set
+            printf("(%d) Child about to signal parent\n", (int) getpid());
             if(kill(getppid(), SIGUSR1) == -1) {
                 unix_error("Failed to send SIGUSR1");
             }
@@ -245,22 +248,23 @@ void eval(char *cmdline) {
                 unix_error("sigaction");
             }
 
-            if(execve(path, argv, environ) == -1) {
+            if(execv(argv[0], argv) == -1) {
                 unix_error("execve");
             }
-            exit(EXIT_SUCCESS);
+            _exit(EXIT_SUCCESS);
 
         // parent
         default:
             // wait for SIGUSR1 signal from child process
-            sigset_t emptymask;
             sigemptyset(&emptymask);
-            if(sigsuspend(&emptymask) == -1) {
+            printf("(%d) Parent waiting for child\n", (int) getpid());
+            if(sigsuspend(&emptymask) == -1 && errno != EINTR)   {
                 unix_error("sigsuspend");
             }
+            printf("(%d) Parent got signal: %d\n", (int) getpid(), SIGUSR1);
 
             // add job to job list
-            if(addjob((struct job_t *) &jobs, childpid, state, cmdline) == 0) {
+            if(addjob((struct job_t *) &jobs, getpid(), state, cmdline) == 0) {
                 app_error("addjob");
             }
 
@@ -269,9 +273,6 @@ void eval(char *cmdline) {
                 unix_error("sigprocmask");
             }
 
-            if(execve(path, argv, environ) == -1) {
-                unix_error("execve");
-            }
             exit(EXIT_SUCCESS);
     }
 
@@ -331,9 +332,9 @@ int parseline(const char *cmdline, char **argv) {
  */
 int builtin_cmd(char **argv) {
     if(strcmp(argv[0], "quit") == 0) {
-        if(kill(-1, SIGQUIT) == -1) {
+        if(kill(0, SIGQUIT) == -1) {
             unix_error("failed to send SIGQUIT");
-        }
+        } 
     } else if(strcmp(argv[0], "jobs")) {
         listjobs((struct job_t *) &jobs);
         return 1;
@@ -366,11 +367,17 @@ void do_bgfg(char **argv) {
         job = getjobpid((struct job_t *) &jobs, pid);
     }
 
-    // next, check the command
+    // next, check the command and restart <job> in its new state
     if(strcmp(argv[0], "bg") == 0) {
         job->state = BG;
+        if(kill(job->pid, SIGCONT) == -1) {
+            unix_error("failed to send SIGCONT");
+        }
     } else {
         job->state = FG;
+        if(kill(job->pid, SIGCONT) == -1) {
+            unix_error("failed to send SIGCONT");
+        }
         waitfg(job->pid);
     }
     return;
@@ -458,6 +465,7 @@ void sigint_handler(int sig) {
         if(kill(fg, SIGINT) == -1) {
             unix_error("failed to send SIGINT");
         }
+        printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(fg), (int) fg, SIGINT);
     }
     return;
 }
@@ -481,6 +489,7 @@ void sigtstp_handler(int sig) {
         if(kill(fg, SIGTSTP) == -1) {
             unix_error("failed to send SIGTSTP");
         }
+        printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(fg), (int) fg, SIGTSTP);
     }
     return;
 }
