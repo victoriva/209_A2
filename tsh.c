@@ -165,8 +165,8 @@ int main(int argc, char **argv) {
  * when we type ctrl-c (ctrl-z) at the keyboard.  
 */
 void eval(char *cmdline) {
-    char *argv = malloc(MAXARGS);
-    int argc = parseline(cmdline, *argv);
+    char **argv = malloc(MAXARGS);
+    int argc = parseline(cmdline, argv);
 
     //existing built-in commands
     char builtin_cmds[4][4] = {"quit", "jobs", "bg", "fg"};
@@ -348,19 +348,22 @@ int builtin_cmd(char **argv) {
  * do_bgfg - Execute the builtin bg and fg commands
  */
 void do_bgfg(char **argv) {
+    struct job_t *job;
     // first, obtain pid
-    
-    // assume pid was given as the second argument
-    struct job_t *job = getjobpid((struct job_t *) &jobs, (pid_t) strtol(argv[1], NULL, 10));
-    // if <job> is NULL, then the second argument was not a pid
-    if(job == NULL) {
-        job = getjobjid((struct job_t *) &jobs, (pid_t) strtol(argv[1], NULL, 10));
-        // if <job> is NULL once more, then the second argument 
-        // does not represent an existing job by pid nor jid
-        if (job == NULL) {
-            printf("Job (%s) does not exist\n", argv[1]);
-            return;
+
+    // if the second argument is preceded by '%', then it is a jid
+    // otherwise it is a pid
+    if(argv[1][0] == '%') {
+        int maxlen = snprintf(NULL, 0, "%d", MAXJOBS);
+        char *jid_str = malloc(maxlen);
+        for(int i=1; i<sizeof(argv[1]); i++) {
+            jid_str[i-1] = argv[1][i];
         }
+        int jid = (int) strtol(jid_str, NULL, 10);
+        job = getjobjid((struct job_t *) &jobs, jid);
+    } else {
+        pid_t pid = (pid_t) strtol(argv[1], NULL, 10);
+        job = getjobpid((struct job_t *) &jobs, pid);
     }
 
     // next, check the command
@@ -383,7 +386,7 @@ void waitfg(pid_t pid) {
     // ensure that the given <pid> matches that of the 
     // foreground job (i.e. <fg> != 0 or some other pid)
 
-    if(fg = pid) {
+    if(fg == pid) {
         // create an empty mask
         sigset_t mask;
         sigemptyset(&mask);
