@@ -192,6 +192,9 @@ void eval(char *cmdline) {
         state = FG;
     }
 
+    // add null terminator to argv
+    argv[argc] = '\0';
+
     // create mask to block signals so the parent has the chance
     // to add the job to the job list (i.e. the child may terminate or be
     // stopped before the parent could add it to the job list)
@@ -248,13 +251,18 @@ void eval(char *cmdline) {
                 unix_error("sigaction");
             }
 
-            if(execv(argv[0], argv) == -1) {
+            if(execve(argv[0], argv, NULL) == -1) {
                 unix_error("execve");
             }
             _exit(EXIT_SUCCESS);
 
         // parent
         default:
+            // add job to job list
+            if(addjob((struct job_t *) &jobs, getpid(), state, cmdline) == 0) {
+                app_error("addjob");
+            }
+            
             // wait for SIGUSR1 signal from child process
             sigemptyset(&emptymask);
             printf("(%d) Parent waiting for child\n", (int) getpid());
@@ -262,11 +270,6 @@ void eval(char *cmdline) {
                 unix_error("sigsuspend");
             }
             printf("(%d) Parent got signal: %d\n", (int) getpid(), SIGUSR1);
-
-            // add job to job list
-            if(addjob((struct job_t *) &jobs, getpid(), state, cmdline) == 0) {
-                app_error("addjob");
-            }
 
             // unblock signals
             if(sigprocmask(SIG_SETMASK, &oldmask, NULL) == -1) {
